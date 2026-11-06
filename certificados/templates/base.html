@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Emita e valide certificados das formações da Prosper.">
+  <title>{% block title %}Central de certificados{% endblock %} | Prosper</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <a class="skip" href="#conteudo">Ir para o conteúdo</a>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="{{ url_for('portal.issue') }}" aria-label="Prosper Certificados, início">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 28 28" fill="none">
+            <path d="M6 5h16v13H6zM10 9h8m-8 4h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="m17 18-2 5 3-1 2 2 1-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="19" cy="17" r="3" fill="#153a32" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+        </span>
+        <span>Prosper <small>Certificados</small></span>
+      </a>
+      <nav aria-label="Navegação principal" class="nav">
+        <a href="{{ url_for('portal.issue') }}"{% if request.endpoint == 'portal.issue' %} aria-current="page"{% endif %}>Emitir</a>
+        <a href="{{ url_for('portal.verify') }}"{% if request.endpoint == 'portal.verify' %} aria-current="page"{% endif %}>Validar</a>
+        <a class="nav-admin" href="{{ url_for('admin.index') }}"{% if request.blueprint == 'admin' %} aria-current="page"{% endif %}>Painel</a>
+      </nav>
+    </div>
+  </header>
+  <main id="conteudo" class="wrap {% block main_class %}{% endblock %}">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <span>Prosper Certificados</span>
+      <span>Emissão e validação de certificados</span>
+    </div>
+  </footer>
+</body>
+</html>

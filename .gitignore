@@ -1,0 +1,13 @@
+.env
+.env.*
+.venv/
+__pycache__/
+*.py[cod]
+data/
+*.sqlite3*
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+*.pptx
+*.pdf

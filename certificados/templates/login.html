@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% from "_forms.html" import alert, csrf %}
+{% block title %}Acesso ao painel{% endblock %}
+{% block main_class %}center-layout{% endblock %}
+{% block content %}
+<section class="panel action-panel" aria-labelledby="login-title">
+  <p class="eyebrow"><span></span> Área administrativa</p>
+  <h1 class="compact-title" id="login-title">Acesso ao painel</h1>
+  <p class="muted">Cadastre formações e gerencie a emissão de certificados.</p>
+  {% if error %}{{ alert(error) }}{% endif %}
+  <form class="stack" method="post">
+    {{ csrf() }}
+    <div class="field">
+      <label for="password">Senha administrativa</label>
+      <input id="password" name="password" type="password" maxlength="128" autocomplete="current-password" required>
+    </div>
+    <button class="button primary" type="submit">Entrar</button>
+  </form>
+</section>
+{% endblock %}

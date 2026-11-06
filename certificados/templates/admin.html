@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_forms.html" import alert, csrf, formation_fields %}
+{% block title %}Painel de formações{% endblock %}
+{% block main_class %}admin-layout{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow"><span></span> Área administrativa</p>
+    <h1>Painel de formações</h1>
+    <p class="lede">Gerencie os modelos, as listas e a liberação de cada formação.</p>
+  </div>
+  <form action="{{ url_for('admin.logout') }}" method="post">
+    {{ csrf() }}
+    <button class="button secondary" type="submit">Sair</button>
+  </form>
+</div>
+<div class="admin-grid">
+  <section class="panel admin-panel" aria-labelledby="formations-title">
+    <h2 id="formations-title">Formações cadastradas</h2>
+    {% if formations %}
+      <ul class="formation-list">
+        {% for formation in formations %}
+          <li>
+            <a class="formation-row" href="{{ url_for('admin.detail', formation_id=formation.id) }}">
+              <span>
+                <small>{{ formation.program }}</small>
+                <strong>{{ formation.title }}</strong>
+                <small>{{ formation.participants - formation.revoked }} cadastro(s) ativo(s) · {{ formation.issued }} emissão(ões)</small>
+              </span>
+              <span class="badge {{ 'live' if formation.released_at else 'draft' }}">{{ "Liberada" if formation.released_at else "Rascunho" }}</span>
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="empty-state">
+        <strong>Nenhuma formação cadastrada</strong>
+        <p>Crie uma formação para enviar o primeiro modelo e a lista de participantes.</p>
+      </div>
+    {% endif %}
+  </section>
+  <section class="panel admin-panel" aria-labelledby="new-title">
+    <h2 id="new-title">Nova formação</h2>
+    {% if error %}{{ alert(error) }}{% endif %}
+    <form class="stack" method="post">
+      {{ csrf() }}
+      {{ formation_fields() }}
+      <button class="button primary" type="submit">Criar formação</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

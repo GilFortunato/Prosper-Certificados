@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block main_class %}center-layout{% endblock %}
+{% block content %}
+<section class="panel action-panel" aria-labelledby="error-title">
+  <h1 class="compact-title" id="error-title">{{ title }}</h1>
+  <p class="muted">{{ message }}</p>
+  <a class="text-link" href="{{ url_for('portal.issue') }}">Voltar à central de certificados</a>
+</section>
+{% endblock %}

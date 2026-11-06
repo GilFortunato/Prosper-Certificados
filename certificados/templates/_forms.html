@@ -1,0 +1,33 @@
+{% macro csrf() -%}
+<input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+{%- endmacro %}
+
+{% macro alert(message, kind="error") -%}
+<div class="notice notice-{{ kind }}" role="{{ 'alert' if kind == 'error' else 'status' }}">{{ message }}</div>
+{%- endmacro %}
+
+{% macro formation_fields(formation=none) -%}
+  <label class="field">
+    <span>Programa</span>
+    <input name="program" maxlength="150" required value="{{ formation.program if formation else '' }}" placeholder="Ex. Prosper Digital Skills">
+  </label>
+  <label class="field">
+    <span>Formação ou turma</span>
+    <input name="title" maxlength="150" required value="{{ formation.title if formation else '' }}" placeholder="Ex. Formação em IA aplicada">
+  </label>
+  <div class="field-pair">
+    <label class="field">
+      <span>Carga horária <small>opcional</small></span>
+      <input name="workload" maxlength="40" value="{{ formation.workload if formation else '' }}" placeholder="Ex. 90 horas">
+    </label>
+    <label class="field">
+      <span>Período <small>opcional</small></span>
+      <input name="period" maxlength="100" value="{{ formation.period if formation else '' }}" placeholder="Ex. setembro a outubro de 2026">
+    </label>
+  </div>
+{%- endmacro %}
+
+{% macro key_field(id="key") -%}
+<label for="{{ id }}">Chave de validação</label>
+<input id="{{ id }}" name="key" maxlength="64" minlength="8" spellcheck="false" autocapitalize="characters" autocomplete="off" placeholder="Ex. A7M4-2P9Q-8K3T" required>
+{%- endmacro %}

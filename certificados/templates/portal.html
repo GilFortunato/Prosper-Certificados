@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "_forms.html" import alert, csrf, key_field %}
+{% set issuing = mode == "issue" %}
+{% block title %}{{ "Emitir certificado" if issuing else "Validar certificado" }}{% endblock %}
+{% block main_class %}public-layout{% endblock %}
+{% block content %}
+<section class="hero" aria-labelledby="page-title">
+  <p class="eyebrow"><span></span> Central de certificados</p>
+  <h1 id="page-title">{{ "Emissão de certificados" if issuing else "Validação de certificados" }}</h1>
+  <p class="lede">
+    {% if issuing %}
+      Use o CPF informado na sua formação e a chave de validação que você recebeu para baixar seu certificado em PDF.
+    {% else %}
+      Informe a chave impressa no documento para confirmar a emissão e consultar os dados da formação.
+    {% endif %}
+  </p>
+  <div class="hero-note">
+    <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      {% if issuing %}
+        <path d="M14 4v13m-5-5 5 5 5-5M6 17v6h16v-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      {% else %}
+        <path d="m14 3 9 4v6c0 5-5 9-9 12-4-3-9-7-9-12V7l9-4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="m10 14 3 3 5-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      {% endif %}
+    </svg>
+    <div>
+      <strong>{{ "PDF da formação" if issuing else "Consulta pela chave" }}</strong>
+      <p>{{ "O mesmo arquivo fica disponível para novos downloads." if issuing else "O resultado mostra o status, o programa e a formação." }}</p>
+    </div>
+  </div>
+</section>
+
+<section class="panel action-panel" aria-labelledby="action-title">
+  <h2 id="action-title">{{ "Baixar certificado" if issuing else "Consultar certificado" }}</h2>
+  <p class="muted">
+    {{ "Informe os dados do participante." if issuing else "Copie a chave de validação do certificado." }}
+  </p>
+  {% if error %}{{ alert(error) }}{% endif %}
+  <form class="stack" method="post">
+    {{ csrf() }}
+    {% if issuing %}
+      <div class="field">
+        <label for="cpf">CPF</label>
+        <input id="cpf" name="cpf" type="text" inputmode="numeric" maxlength="14" autocomplete="off" placeholder="000.000.000-00" required>
+      </div>
+    {% endif %}
+    <div class="field">{{ key_field() }}</div>
+    <button class="button primary" type="submit">{{ "Baixar certificado em PDF" if issuing else "Validar chave" }}</button>
+  </form>
+
+  {% if checked %}
+    {% if not certificate %}
+      {{ alert("Nenhum certificado emitido foi localizado com essa chave.", "neutral") }}
+    {% elif certificate.revoked_at %}
+      {{ alert("Certificado revogado.", "error") }}
+    {% else %}
+      <section class="validation-result" aria-label="Resultado da consulta" role="status">
+        <span class="badge live">Certificado válido</span>
+        <dl>
+          <div><dt>Programa</dt><dd>{{ certificate.program }}</dd></div>
+          <div><dt>Formação</dt><dd>{{ certificate.title }}</dd></div>
+          {% if certificate.workload %}<div><dt>Carga horária</dt><dd>{{ certificate.workload }}</dd></div>{% endif %}
+          {% if certificate.period %}<div><dt>Período</dt><dd>{{ certificate.period }}</dd></div>{% endif %}
+          <div><dt>Data de emissão</dt><dd>{{ certificate.issued_at|brazil_date }}</dd></div>
+        </dl>
+      </section>
+    {% endif %}
+  {% endif %}
+
+  <a class="text-link panel-link" href="{{ url_for('portal.verify' if issuing else 'portal.issue') }}">
+    {{ "Já tem o certificado? Validar a chave" if issuing else "Precisa do arquivo? Emitir certificado" }}
+  </a>
+</section>
+{% endblock %}

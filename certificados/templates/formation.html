@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% from "_forms.html" import alert, csrf, formation_fields, key_field %}
+{% block title %}{{ formation.title }}{% endblock %}
+{% block main_class %}admin-layout{% endblock %}
+{% block content %}
+<a class="text-link back-link" href="{{ url_for('admin.index') }}">Voltar às formações</a>
+<div class="page-heading">
+  <div>
+    <p class="eyebrow"><span></span> {{ formation.program }}</p>
+    <h1>{{ formation.title }}</h1>
+  </div>
+  <span class="badge {{ 'live' if formation.released_at else 'draft' }}">{{ "Autoemissão liberada" if formation.released_at else "Rascunho" }}</span>
+</div>
+{% for category, message in get_flashed_messages(with_categories=true) %}
+  {{ alert(message, category) }}
+{% endfor %}
+
+<nav class="section-nav" aria-label="Seções da formação">
+  <a href="#modelo">Modelo PowerPoint</a>
+  <a href="#lista">Lista Excel</a>
+  {% if formation.released_at %}
+    <a href="#revogar">Revogar chave</a>
+  {% else %}
+    <a href="#dados">Dados da formação</a>
+    <a href="#liberar">Liberar emissão</a>
+  {% endif %}
+</nav>
+
+<div class="formation-grid">
+  <section class="panel admin-panel" id="modelo" aria-labelledby="model-title">
+    <p class="eyebrow"><span></span> Etapa 1</p>
+    <h2 id="model-title">Modelo PowerPoint</h2>
+    <p class="muted">Use campos editáveis como <code>&lt;&lt;Nome&gt;&gt;</code> e <code>&lt;&lt;Chave de validação&gt;&gt;</code> nas caixas de texto.</p>
+    {% if formation.template_name %}
+      <p class="file-name">{{ formation.template_name }}</p>
+      <ul class="tags" aria-label="Campos identificados">
+        {% for label in fields.values() %}<li>&lt;&lt;{{ label }}&gt;&gt;</li>{% endfor %}
+      </ul>
+    {% endif %}
+    {% if not formation.released_at %}
+      <form class="stack" action="{{ url_for('admin.upload_template', formation_id=formation.id) }}" method="post" enctype="multipart/form-data">
+        {{ csrf() }}
+        <div class="field">
+          <label for="template">Arquivo .pptx</label>
+          <input id="template" name="template" type="file" accept=".pptx" required>
+          <small>Até 12 MB</small>
+        </div>
+        <button class="button secondary" type="submit">{{ "Substituir modelo" if formation.template_name else "Enviar modelo" }}</button>
+      </form>
+    {% endif %}
+    {% if formation.template_name %}
+      <form class="preview-form" action="{{ url_for('admin.preview', formation_id=formation.id) }}" method="post">
+        {{ csrf() }}
+        <button class="button secondary" type="submit">Baixar prévia em PDF</button>
+        <small>Usa dados fictícios.</small>
+      </form>
+    {% endif %}
+  </section>
+
+  <section class="panel admin-panel" id="lista" aria-labelledby="list-title">
+    <p class="eyebrow"><span></span> Etapa 2</p>
+    <h2 id="list-title">Lista Excel</h2>
+    <p class="muted">A primeira aba deve ter as colunas Nome, CPF e Chave de validação.</p>
+    {% if custom_fields %}
+      <p class="muted">Inclua também {{ custom_fields.values()|join(', ') }}.</p>
+    {% endif %}
+    <a class="text-link" href="{{ url_for('admin.download_spreadsheet', formation_id=formation.id) }}">Baixar planilha-modelo</a>
+    <dl class="metrics">
+      <div><dt>Cadastros ativos</dt><dd>{{ formation.participants - formation.revoked }}</dd></div>
+      <div><dt>Emitidos</dt><dd>{{ formation.issued }}</dd></div>
+      <div><dt>Revogados</dt><dd>{{ formation.revoked }}</dd></div>
+    </dl>
+    {% if formation.template_name %}
+      <form class="stack" action="{{ url_for('admin.upload_list', formation_id=formation.id) }}" method="post" enctype="multipart/form-data">
+        {{ csrf() }}
+        <div class="field">
+          <label for="spreadsheet">Arquivo .xlsx</label>
+          <input id="spreadsheet" name="spreadsheet" type="file" accept=".xlsx" required>
+          <small>{{ "A importação acrescenta novos cadastros à formação." if formation.released_at else "Enquanto estiver em rascunho, um novo arquivo substitui a lista." }} Até 5 MB.</small>
+        </div>
+        <button class="button secondary" type="submit">Importar participantes</button>
+      </form>
+    {% else %}
+      <p class="muted">Envie o PowerPoint para habilitar a importação.</p>
+    {% endif %}
+  </section>
+
+  {% if formation.released_at %}
+    <section class="panel admin-panel" id="revogar" aria-labelledby="revoke-title">
+      <h2 id="revoke-title">Revogar chave</h2>
+      <p class="muted">A revogação bloqueia novos downloads. Se já houve emissão, a consulta pública informa que o certificado foi revogado.</p>
+      <form class="stack" action="{{ url_for('admin.revoke', formation_id=formation.id) }}" method="post">
+        {{ csrf() }}
+        <div class="field">{{ key_field("revoke-key") }}</div>
+        <button class="button danger" type="submit">Revogar certificado</button>
+      </form>
+    </section>
+  {% else %}
+    <section class="panel admin-panel" id="dados" aria-labelledby="details-title">
+      <h2 id="details-title">Dados da formação</h2>
+      <form class="stack" action="{{ url_for('admin.update_details', formation_id=formation.id) }}" method="post">
+        {{ csrf() }}
+        {{ formation_fields(formation) }}
+        <button class="button secondary" type="submit">Salvar dados da formação</button>
+      </form>
+    </section>
+
+    <section class="panel admin-panel" id="liberar" aria-labelledby="release-title">
+      <p class="eyebrow"><span></span> Etapa 3</p>
+      <h2 id="release-title">Liberar autoemissão</h2>
+      <p class="muted">Confira a prévia e a lista antes de liberar. Os participantes poderão baixar o PDF com CPF e chave.</p>
+      <form class="stack" action="{{ url_for('admin.release', formation_id=formation.id) }}" method="post">
+        {{ csrf() }}
+        <button class="button primary" type="submit"{% if not formation.template_name or not formation.participants %} disabled{% endif %}>Liberar emissão</button>
+      </form>
+    </section>
+  {% endif %}
+</div>
+{% endblock %}

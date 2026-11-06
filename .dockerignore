@@ -1,0 +1,5 @@
+*
+!certificados/
+!certificados/**
+!requirements.txt
+**/__pycache__/
