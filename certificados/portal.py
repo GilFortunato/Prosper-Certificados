@@ -2,10 +2,10 @@ import ipaddress
 import json
 from io import BytesIO
 
-from flask import Blueprint, current_app, render_template, request, send_file
+from flask import Blueprint, abort, current_app, redirect, render_template, request, send_file, url_for
 
-from . import brazil_date, data
-from .formats import KEY, NAME, RenderError, normalize_cpf, normalize_key, render_pdf
+from . import data
+from .formats import KEY, NAME, RenderError, normalize_cpf, normalize_issue_date, normalize_key, render_pdf, split_skills
 
 
 portal = Blueprint("portal", __name__)
@@ -39,7 +39,7 @@ def rate_limit(scope, max_hits, seconds, source=None):
     return None
 
 
-def certificate_values(formation, name, key, fields, issued_at):
+def certificate_values(formation, name, key, fields, issued_at, *, issued_on=None):
     return {
         **fields,
         NAME: name,
@@ -48,7 +48,7 @@ def certificate_values(formation, name, key, fields, issued_at):
         "formacao": formation["title"],
         "carga horaria": formation["workload"],
         "periodo": formation["period"],
-        "data de emissao": brazil_date(issued_at),
+        "data de emissao": data.issuance_day(issued_on, issued_at).strftime("%d/%m/%Y"),
     }
 
 
@@ -70,6 +70,10 @@ def pdf_download(content, filename="certificado.pdf"):
 
 @portal.route("/", methods=["GET", "POST"])
 def issue():
+    if not current_app.config["ISSUANCE_ENABLED"]:
+        if request.method == "GET":
+            return redirect(url_for("portal.verify"))
+        abort(404)
     if request.method == "GET":
         return render_template("portal.html", mode="issue")
 
@@ -92,8 +96,10 @@ def issue():
     pdf = participant["pdf"]
     if pdf is None:
         issued_at = data.timestamp()
+        issued_on = participant["issued_on"]
         values = certificate_values(
             participant, participant["name"], key, json.loads(participant["fields"]), issued_at,
+            issued_on=issued_on,
         )
         try:
             pdf = generate_pdf(data.load_template(participant["formation_id"]), values)
@@ -103,7 +109,11 @@ def issue():
                 "portal.html", mode="issue",
                 error="O PDF está temporariamente indisponível. Tente novamente em alguns instantes.",
             ), 503
-        pdf = data.record_issuance(participant["id"], pdf, issued_at)
+        try:
+            day = data.issuance_day(issued_on, issued_at).isoformat()
+            pdf = data.record_issuance(participant["id"], pdf, issued_at, day)
+        except data.InputError as error:
+            return render_template("portal.html", mode="issue", error=str(error)), 409
 
     if pdf is None:
         return render_template("portal.html", mode="issue", error=NOT_AVAILABLE), 404
@@ -111,6 +121,7 @@ def issue():
 
 
 @portal.route("/validar", methods=["GET", "POST"])
+@portal.route("/validacao", methods=["GET", "POST"])
 def verify():
     if request.method == "GET":
         return render_template("portal.html", mode="verify")
@@ -120,8 +131,19 @@ def verify():
         return limited
     try:
         key = normalize_key(request.form.get("key", ""))
+        issued_on = normalize_issue_date(request.form.get("issued_on", ""))
     except data.InputError as error:
         return render_template("portal.html", mode="verify", error=str(error)), 400
 
+    limited = rate_limit("verify-key", 20, 300, source=key)
+    if limited:
+        return limited
     certificate = data.check_certificate(key)
-    return render_template("portal.html", mode="verify", certificate=certificate, checked=True)
+    if certificate:
+        date = data.issuance_day(certificate["issued_on"], certificate["issued_at"])
+        if date.isoformat() == issued_on:
+            return render_template(
+                "portal.html", mode="verify", certificate=certificate, checked=True,
+                display_date=date.strftime("%d/%m/%Y"), skills=split_skills(certificate["skills"]),
+            )
+    return render_template("portal.html", mode="verify", checked=True)

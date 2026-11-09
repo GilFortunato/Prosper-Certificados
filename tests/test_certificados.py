@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import date
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -47,8 +48,12 @@ def powerpoint():
 
 
 def spreadsheet(*rows):
+    return workbook(["Nome completo", "CPF", "Chave Validadora", "Turma", "E-mail"], rows)
+
+
+def workbook(headers, rows):
     book = Workbook()
-    book.active.append(["Nome completo", "CPF", "Chave Validadora", "Turma", "E-mail"])
+    book.active.append(headers)
     for row in rows:
         book.active.append(row)
     output = BytesIO()
@@ -88,6 +93,7 @@ class PortalTest(unittest.TestCase):
         self.app = create_app({
             "TESTING": True,
             "DB_PATH": str(Path(folder.name) / "certificados.sqlite3"),
+            "ISSUANCE_ENABLED": False,
             "SECRET_KEY": os.urandom(32),
             "CPF_KEY": os.urandom(32),
             "ADMIN_PASSWORD_HASH": self.password_hash,
@@ -96,7 +102,7 @@ class PortalTest(unittest.TestCase):
         self.admin = self.app.test_client()
         self.visitor = self.app.test_client()
         self.admin.get("/admin/entrar")
-        self.visitor.get("/")
+        self.visitor.get("/validacao")
 
     def post(self, client, path, fields=None, **kwargs):
         with client.session_transaction() as session:
@@ -108,18 +114,23 @@ class PortalTest(unittest.TestCase):
         self.assertEqual(result.status_code, 302)
         self.admin.get("/admin/")
 
-    def create_formation(self, program="Programa Horizonte", title="Formação em IA"):
+    def create_formation(self, program="Programa Horizonte", title="Formação em IA", *, with_template=True):
         result = self.post(
             self.admin, "/admin/", {"program": program, "title": title, "workload": "90 horas"},
         )
         self.assertEqual(result.status_code, 302)
         path = result.location
+        if with_template:
+            self.upload_template(path)
+        return path
+
+    def upload_template(self, path):
+        self.app.config["ISSUANCE_ENABLED"] = True
         result = self.post(
             self.admin, f"{path}/modelo", {"template": (BytesIO(powerpoint()), "modelo.pptx")},
             follow_redirects=True,
         )
         self.assertIn("Modelo PowerPoint salvo.", result.get_data(as_text=True))
-        return path
 
     def import_list(self, path, *rows):
         return self.post(
@@ -127,8 +138,17 @@ class PortalTest(unittest.TestCase):
             follow_redirects=True,
         ).get_data(as_text=True)
 
-    def verify(self, key):
-        return self.post(self.visitor, "/validar", {"key": key}).get_data(as_text=True)
+    def import_validation(self, path, content, issued_on="", skills=""):
+        return self.post(self.admin, f"{path}/validacao", {
+            "validation_list": (BytesIO(content), "certificados.xlsx"),
+            "issued_on": issued_on,
+            "skills": skills,
+        }, follow_redirects=True).get_data(as_text=True)
+
+    def verify(self, key, issued_on=None):
+        if issued_on is None:
+            issued_on = data.issuance_day(None, data.timestamp()).isoformat()
+        return self.post(self.visitor, "/validacao", {"key": key, "issued_on": issued_on}).get_data(as_text=True)
 
     def issue(self, cpf, key):
         return self.post(self.visitor, "/", {"cpf": cpf, "key": key})
@@ -160,9 +180,9 @@ class PortalTest(unittest.TestCase):
             self.assertEqual(converter.call_count, 3)
 
         verified = self.verify(self.KEY)
-        for public_value in ("Certificado válido", "Programa Horizonte", "Formação em IA", "90 horas"):
+        for public_value in ("Certificado válido", "Programa Horizonte", "Formação em IA", "90 horas", "Ana Fictícia"):
             self.assertIn(public_value, verified)
-        for private_value in ("Ana Fictícia", self.CPF, "demo@example.com"):
+        for private_value in (self.CPF, "demo@example.com"):
             self.assertNotIn(private_value, verified)
         with self.app.app_context():
             row = data.connect().execute("SELECT cpf_digest, fields FROM participants").fetchone()
@@ -205,6 +225,79 @@ class PortalTest(unittest.TestCase):
         with patch("certificados.portal.render_pdf", return_value=self.PDF):
             self.assertEqual(self.issue(self.CPF, self.KEY).status_code, 200)
         self.assertIn("Certificado válido", self.verify(self.KEY))
+
+    def test_validation_requires_key_and_date_across_multiple_programs(self):
+        self.assertEqual(self.visitor.get("/").location, "/validacao")
+        self.assertEqual(self.issue(self.CPF, self.KEY).status_code, 404)
+        self.sign_in()
+        first_path = self.create_formation(with_template=False)
+        second_path = self.create_formation("Programa Conexão", "Atendimento ao cliente", with_template=False)
+        self.assertEqual(self.post(self.admin, f"{first_path}/modelo").status_code, 404)
+
+        first = workbook(["Nome", "E-mail", "Chave de validação"], [["Ana Fictícia", "demo@example.com", self.KEY]])
+        self.assertIn("Preencha a data de emissão", self.import_validation(first_path, first))
+        self.assertIn("Preencha as habilidades", self.import_validation(first_path, first, "2026-11-06"))
+        result = self.import_validation(first_path, first, "2026-11-06", "Escuta ativa\nAnálise de dados")
+        self.assertIn("Chaves novas (1)", result)
+
+        second_key = "DEMO-PR57-KL89"
+        second = workbook(
+            ["Nome completo", "Chave validadora", "Data de emissão", "Habilidades"],
+            [["Bruna Fictícia", second_key, date(2026, 11, 4), "Comunicação\nNegociação"]],
+        )
+        self.assertIn("Chaves novas (1)", self.import_validation(second_path, second))
+
+        wrong = self.verify(self.KEY, "2026-11-05")
+        self.assertIn("Nenhum certificado foi localizado", wrong)
+        for value in ("Certificado válido", "Ana Fictícia", "Programa Horizonte", "Análise de dados"):
+            self.assertNotIn(value, wrong)
+        correct = self.verify(self.KEY.lower(), "06/11/2026")
+        for value in ("Certificado válido", "Ana Fictícia", "Programa Horizonte", "06/11/2026", "Análise de dados"):
+            self.assertIn(value, correct)
+        self.assertNotIn("demo@example.com", correct)
+        self.assertNotIn("Programa Conexão", correct)
+        other = self.verify(second_key, "04112026")
+        for value in ("Bruna Fictícia", "Programa Conexão", "Atendimento ao cliente", "Negociação"):
+            self.assertIn(value, other)
+
+        self.post(self.admin, f"{first_path}/revogar", {"key": self.KEY})
+        self.assertIn("mantidas (1)", self.import_validation(first_path, first, "2026-11-06", "Escuta ativa"))
+        revoked = self.verify(self.KEY, "2026-11-06")
+        self.assertIn("Certificado revogado", revoked)
+        self.assertNotIn("Ana Fictícia", revoked)
+
+    def test_validation_import_is_atomic_and_allows_correcting_unissued_record(self):
+        self.sign_in()
+        first_path = self.create_formation(with_template=False)
+        second_path = self.create_formation("Outro programa", with_template=False)
+        first = workbook(["Nome", "Chave"], [["Ana Fictícia", self.KEY]])
+        other_key = "DEMO-FM72-37XJ"
+        second = workbook(["Nome", "Chave"], [["Bruna Fictícia", other_key], ["Ana Fictícia", self.KEY]])
+        self.import_validation(first_path, first, "2026-11-06", "Planejamento")
+        collision = self.import_validation(second_path, second, "2026-11-06", "Comunicação")
+        self.assertIn("Linha 3 · Esta chave já pertence a outro cadastro", collision)
+        self.assertNotIn("Bruna Fictícia", self.verify(other_key, "2026-11-06"))
+        updated = self.import_validation(first_path, first, "2026-11-04", "Organização")
+        self.assertIn("atualizadas (1)", updated)
+        self.assertIn("Organização", self.verify(self.KEY, "2026-11-04"))
+        self.assertNotIn("Certificado válido", self.verify(self.KEY, "2026-11-06"))
+
+    def test_later_pdf_uses_the_date_already_registered_for_the_key(self):
+        self.sign_in()
+        path = self.create_formation(with_template=False)
+        entry = workbook(["Nome", "Chave"], [["Ana Fictícia", self.KEY]])
+        self.import_validation(path, entry, "2026-11-04", "Análise de dados")
+        self.upload_template(path)
+        self.import_list(path, ["Ana Fictícia", self.CPF, self.KEY, "A"])
+        with patch("certificados.portal.render_pdf", return_value=self.PDF) as converter:
+            self.post(self.admin, f"{path}/liberar")
+            self.assertEqual(self.issue(self.CPF, self.KEY).data, self.PDF)
+            self.assertEqual(converter.call_args.args[1]["data de emissao"], "04/11/2026")
+        invalid = self.import_validation(path, entry, "2026-11-05", "Análise de dados")
+        self.assertIn("Use a data que consta no certificado emitido pelo portal", invalid)
+        self.assertIn("Certificado válido", self.verify(self.KEY, "2026-11-04"))
+        with self.app.app_context():
+            self.assertEqual(data.formations()[0]["valid_keys"], 1)
 
 
 if __name__ == "__main__":

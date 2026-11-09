@@ -11,7 +11,7 @@
     {% if issuing %}
       Use o CPF informado na sua formação e a chave de validação que você recebeu para baixar seu certificado em PDF.
     {% else %}
-      Informe a chave impressa no documento para confirmar a emissão e consultar os dados da formação.
+      Informe a chave de validação e a data de emissão que constam no certificado para consultar o registro.
     {% endif %}
   </p>
   <div class="hero-note">
@@ -24,8 +24,8 @@
       {% endif %}
     </svg>
     <div>
-      <strong>{{ "PDF da formação" if issuing else "Consulta pela chave" }}</strong>
-      <p>{{ "O mesmo arquivo fica disponível para novos downloads." if issuing else "O resultado mostra o status, o programa e a formação." }}</p>
+      <strong>{{ "PDF da formação" if issuing else "Dados do certificado" }}</strong>
+      <p>{{ "O mesmo arquivo fica disponível para novos downloads." if issuing else "A consulta mostra o titular, o programa e as habilidades registradas." }}</p>
     </div>
   </div>
 </section>
@@ -33,7 +33,7 @@
 <section class="panel action-panel" aria-labelledby="action-title">
   <h2 id="action-title">{{ "Baixar certificado" if issuing else "Consultar certificado" }}</h2>
   <p class="muted">
-    {{ "Informe os dados do participante." if issuing else "Copie a chave de validação do certificado." }}
+    {{ "Informe os dados do participante." if issuing else "Use os dados impressos no documento." }}
   </p>
   {% if error %}{{ alert(error) }}{% endif %}
   <form class="stack" method="post">
@@ -45,30 +45,49 @@
       </div>
     {% endif %}
     <div class="field">{{ key_field() }}</div>
-    <button class="button primary" type="submit">{{ "Baixar certificado em PDF" if issuing else "Validar chave" }}</button>
+    {% if not issuing %}
+      <div class="field">
+        <label for="issued-on">Data de emissão</label>
+        <input id="issued-on" name="issued_on" type="text" inputmode="numeric" placeholder="DD/MM/AAAA" maxlength="10" autocomplete="off" required>
+      </div>
+    {% endif %}
+    <button class="button primary" type="submit">{{ "Baixar certificado em PDF" if issuing else "Validar certificado" }}</button>
   </form>
 
   {% if checked %}
     {% if not certificate %}
-      {{ alert("Nenhum certificado emitido foi localizado com essa chave.", "neutral") }}
+      {{ alert("Nenhum certificado foi localizado com essa chave e essa data. Confira os dados impressos no documento.", "neutral") }}
     {% elif certificate.revoked_at %}
       {{ alert("Certificado revogado.", "error") }}
     {% else %}
       <section class="validation-result" aria-label="Resultado da consulta" role="status">
         <span class="badge live">Certificado válido</span>
         <dl>
+          <div><dt>Nome da pessoa</dt><dd>{{ certificate.name }}</dd></div>
           <div><dt>Programa</dt><dd>{{ certificate.program }}</dd></div>
           <div><dt>Formação</dt><dd>{{ certificate.title }}</dd></div>
           {% if certificate.workload %}<div><dt>Carga horária</dt><dd>{{ certificate.workload }}</dd></div>{% endif %}
           {% if certificate.period %}<div><dt>Período</dt><dd>{{ certificate.period }}</dd></div>{% endif %}
-          <div><dt>Data de emissão</dt><dd>{{ certificate.issued_at|brazil_date }}</dd></div>
+          <div><dt>Data de emissão</dt><dd>{{ display_date }}</dd></div>
+          <div>
+            <dt>Habilidades</dt>
+            <dd>
+              {% if skills %}
+                <ul class="skills-list">{% for skill in skills %}<li>{{ skill }}</li>{% endfor %}</ul>
+              {% else %}
+                Habilidades não informadas neste registro.
+              {% endif %}
+            </dd>
+          </div>
         </dl>
       </section>
     {% endif %}
   {% endif %}
 
-  <a class="text-link panel-link" href="{{ url_for('portal.verify' if issuing else 'portal.issue') }}">
-    {{ "Já tem o certificado? Validar a chave" if issuing else "Precisa do arquivo? Emitir certificado" }}
-  </a>
+  {% if config.ISSUANCE_ENABLED %}
+    <a class="text-link panel-link" href="{{ url_for('portal.verify' if issuing else 'portal.issue') }}">
+      {{ "Já tem o certificado? Validar o documento" if issuing else "Precisa do arquivo? Emitir certificado" }}
+    </a>
+  {% endif %}
 </section>
 {% endblock %}

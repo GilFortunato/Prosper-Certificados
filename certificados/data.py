@@ -4,8 +4,9 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from flask import current_app, g
 
@@ -22,6 +23,17 @@ class Participant:
     validation_key: str
     fields: dict[str, str]
 
+
+@dataclass(frozen=True)
+class ValidationRecord:
+    row_number: int
+    name: str
+    validation_key: str
+    issued_on: str
+    skills: str
+
+
+BRAZIL = ZoneInfo("America/Sao_Paulo")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS formations (
@@ -54,6 +66,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS active_cpf_per_formation
     ON participants (formation_id, cpf_digest) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS participants_by_formation ON participants (formation_id);
 
+CREATE TABLE IF NOT EXISTS validation_records (
+    validation_key TEXT PRIMARY KEY NOT NULL,
+    formation_id INTEGER NOT NULL REFERENCES formations (id),
+    name TEXT NOT NULL,
+    issued_on TEXT NOT NULL,
+    skills TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS validation_records_by_formation ON validation_records (formation_id);
+
+CREATE VIEW IF NOT EXISTS verifiable_certificates AS
+    SELECT validation_key, formation_id, name, revoked_at, issued_on, NULL AS issued_at, skills
+    FROM validation_records
+    UNION ALL
+    SELECT p.validation_key, p.formation_id, p.name, p.revoked_at, NULL, p.issued_at,
+           COALESCE(json_extract(p.fields, '$.habilidades'), '')
+    FROM participants p
+    WHERE p.issued_at IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM validation_records v WHERE v.validation_key = p.validation_key
+    );
+
 CREATE TABLE IF NOT EXISTS request_limits (
     scope TEXT NOT NULL,
     source BLOB NOT NULL,
@@ -68,6 +102,13 @@ CREATE INDEX IF NOT EXISTS request_limits_by_window ON request_limits (window);
 FORMATION_COLUMNS = """
     f.id, f.program, f.title, f.workload, f.period, f.template_name,
     f.template_fields, f.revision, f.released_at
+"""
+
+VALIDATION_COUNTS = """
+    (SELECT count(*) FROM verifiable_certificates c
+       WHERE c.formation_id = f.id AND c.revoked_at IS NULL) AS valid_keys,
+    (SELECT count(*) FROM verifiable_certificates c
+       WHERE c.formation_id = f.id AND c.revoked_at IS NOT NULL) AS revoked_keys
 """
 
 
@@ -108,6 +149,12 @@ def timestamp():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def issuance_day(issued_on, issued_at=None):
+    if issued_on:
+        return date.fromisoformat(issued_on)
+    return datetime.fromisoformat(issued_at).astimezone(BRAZIL).date()
+
+
 def cpf_digest(cpf):
     return hmac.digest(current_app.config["CPF_KEY"], cpf.encode("ascii"), "sha256")
 
@@ -130,7 +177,7 @@ def allow_request(scope, source, max_hits, seconds):
 def formations():
     return connect().execute(f"""
         SELECT {FORMATION_COLUMNS}, count(p.id) AS participants,
-               count(p.issued_at) AS issued, count(p.revoked_at) AS revoked
+               count(p.issued_at) AS issued, count(p.revoked_at) AS revoked, {VALIDATION_COUNTS}
         FROM formations f LEFT JOIN participants p ON p.formation_id = f.id
         GROUP BY f.id ORDER BY f.id DESC
     """).fetchall()
@@ -139,7 +186,7 @@ def formations():
 def formation(formation_id):
     return connect().execute(f"""
         SELECT {FORMATION_COLUMNS}, count(p.id) AS participants,
-               count(p.issued_at) AS issued, count(p.revoked_at) AS revoked
+               count(p.issued_at) AS issued, count(p.revoked_at) AS revoked, {VALIDATION_COUNTS}
         FROM formations f LEFT JOIN participants p ON p.formation_id = f.id
         WHERE f.id = ? GROUP BY f.id
     """, (formation_id,)).fetchone()
@@ -177,6 +224,55 @@ def save_template(formation_id, content, name, fields):
         raise InputError("O modelo desta formação já está em uso. Cadastre outra formação para usar um novo modelo.")
 
 
+def same_holder(record, formation_id, person):
+    return record["formation_id"] == formation_id and record["name"].casefold() == person.name.casefold()
+
+
+def register_certificates(formation_id, participants):
+    added = updated = skipped = 0
+    with transaction() as db:
+        for person in participants:
+            registered = db.execute(
+                """SELECT formation_id, name, issued_on, skills, revoked_at FROM validation_records
+                   WHERE validation_key = ?""",
+                (person.validation_key,),
+            ).fetchone()
+            participant = db.execute(
+                "SELECT formation_id, name, issued_at, revoked_at FROM participants WHERE validation_key = ?",
+                (person.validation_key,),
+            ).fetchone()
+            for record in (registered, participant):
+                if record and not same_holder(record, formation_id, person):
+                    raise InputError(f"Linha {person.row_number} · Esta chave já pertence a outro cadastro.")
+            if any(record and record["revoked_at"] for record in (registered, participant)):
+                skipped += 1
+                continue
+
+            if participant and participant["issued_at"]:
+                stored_day = issuance_day(registered["issued_on"] if registered else None, participant["issued_at"])
+                if stored_day.isoformat() != person.issued_on:
+                    raise InputError(f"Linha {person.row_number} · Use a data que consta no certificado emitido pelo portal.")
+
+            if registered is None:
+                db.execute(
+                    """INSERT INTO validation_records (validation_key, formation_id, name, issued_on, skills)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (person.validation_key, formation_id, person.name, person.issued_on, person.skills),
+                )
+                added += 1
+            elif (registered["name"], registered["issued_on"], registered["skills"]) != (
+                person.name, person.issued_on, person.skills,
+            ):
+                db.execute(
+                    "UPDATE validation_records SET name = ?, issued_on = ?, skills = ? WHERE validation_key = ?",
+                    (person.name, person.issued_on, person.skills, person.validation_key),
+                )
+                updated += 1
+            else:
+                skipped += 1
+    return added, updated, skipped
+
+
 def save_participants(formation_id, version, participants):
     added = skipped = 0
     with transaction() as db:
@@ -198,6 +294,14 @@ def save_participants(formation_id, version, participants):
                     skipped += 1
                     continue
                 raise InputError(f"Linha {person.row_number} · Esta chave já pertence a outro cadastro.")
+            registered = db.execute(
+                "SELECT formation_id, name, revoked_at FROM validation_records WHERE validation_key = ?",
+                (person.validation_key,),
+            ).fetchone()
+            if registered and not same_holder(registered, formation_id, person):
+                raise InputError(f"Linha {person.row_number} · Esta chave já pertence a outro cadastro.")
+            if registered and registered["revoked_at"]:
+                raise InputError(f"Linha {person.row_number} · Esta chave foi revogada. Use uma nova chave.")
             try:
                 db.execute(
                     """INSERT INTO participants (formation_id, name, cpf_digest, validation_key, fields)
@@ -246,29 +350,45 @@ def release_formation(formation_id, version, required_fields):
         )
 
 
-def revoke_participant(formation_id, validation_key):
-    changed = connect().execute(
-        """UPDATE participants SET revoked_at = ?, pdf = NULL
-           WHERE formation_id = ? AND validation_key = ? AND revoked_at IS NULL""",
-        (timestamp(), formation_id, validation_key),
-    ).rowcount
-    if not changed:
-        raise InputError("Não encontramos uma chave ativa com esse código nesta formação.")
+def revoke_certificate(formation_id, validation_key, *, allow_unissued):
+    now = timestamp()
+    with transaction() as db:
+        registered = db.execute(
+            """UPDATE validation_records SET revoked_at = ?
+               WHERE formation_id = ? AND validation_key = ? AND revoked_at IS NULL""",
+            (now, formation_id, validation_key),
+        ).rowcount
+        issued = db.execute(
+            """UPDATE participants SET revoked_at = ?, pdf = NULL
+               WHERE formation_id = ? AND validation_key = ? AND revoked_at IS NULL
+                 AND (issued_at IS NOT NULL OR ?)""",
+            (now, formation_id, validation_key, bool(registered) or allow_unissued),
+        ).rowcount
+        if not (registered or issued):
+            raise InputError("Não encontramos uma chave ativa com esse código nesta formação.")
 
 
 def eligible_participant(cpf, validation_key):
     return connect().execute(
-        """SELECT p.id, p.name, p.validation_key, p.fields, p.issued_at, p.pdf,
+        """SELECT p.id, p.name, p.validation_key, p.fields, p.issued_at, p.pdf, v.issued_on,
                   f.id AS formation_id, f.program, f.title, f.workload, f.period
            FROM participants p JOIN formations f ON f.id = p.formation_id
+           LEFT JOIN validation_records v ON v.validation_key = p.validation_key
            WHERE p.validation_key = ? AND p.cpf_digest = ?
              AND p.revoked_at IS NULL AND f.released_at IS NOT NULL""",
         (validation_key, cpf_digest(cpf)),
     ).fetchone()
 
 
-def record_issuance(participant_id, pdf, issued_at):
+def record_issuance(participant_id, pdf, issued_at, rendered_day):
     with transaction() as db:
+        registered = db.execute(
+            """SELECT v.issued_on FROM participants p JOIN validation_records v
+               ON v.validation_key = p.validation_key WHERE p.id = ?""",
+            (participant_id,),
+        ).fetchone()
+        if registered and registered["issued_on"] != rendered_day:
+            raise InputError("A data do certificado foi atualizada. Tente novamente.")
         db.execute(
             """UPDATE participants SET pdf = ?, issued_at = ?
                WHERE id = ? AND issued_at IS NULL AND revoked_at IS NULL""",
@@ -283,8 +403,8 @@ def record_issuance(participant_id, pdf, issued_at):
 
 def check_certificate(validation_key):
     return connect().execute(
-        """SELECT p.issued_at, p.revoked_at, f.program, f.title, f.workload, f.period
-           FROM participants p JOIN formations f ON f.id = p.formation_id
-           WHERE p.validation_key = ? AND p.issued_at IS NOT NULL""",
+        """SELECT c.name, c.skills, c.issued_on, c.issued_at, c.revoked_at, f.program, f.title, f.workload, f.period
+           FROM verifiable_certificates c JOIN formations f ON f.id = c.formation_id
+           WHERE c.validation_key = ?""",
         (validation_key,),
     ).fetchone()

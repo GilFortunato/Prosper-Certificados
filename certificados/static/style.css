@@ -27,7 +27,7 @@ body {
 a { color: var(--deep); }
 p, h1, h2, ul, dl { margin: 0; }
 p + p { margin-top: .65rem; }
-button, input { font: inherit; }
+button, input, textarea { font: inherit; }
 :focus-visible { outline: 3px solid #347854; outline-offset: 4px; }
 .wrap { width: min(100% - 3rem, 71rem); margin-inline: auto; }
 .skip {
@@ -142,7 +142,7 @@ h2 { font-size: clamp(1.3rem, 2.25vw, 1.75rem); letter-spacing: -.033em; line-he
 .stack { display: grid; gap: 1rem; margin-top: 1.2rem; }
 .field { display: grid; align-content: start; gap: .35rem; min-width: 0; font-weight: 660; }
 .field small, .preview-form small { font-size: .8rem; font-weight: 430; }
-input {
+input, textarea {
   width: 100%;
   min-width: 0;
   min-height: 2.8rem;
@@ -153,7 +153,8 @@ input {
   color: var(--ink);
   font-weight: 450;
 }
-input::placeholder { color: #596d61; }
+input::placeholder, textarea::placeholder { color: #596d61; }
+textarea { resize: vertical; }
 input[type="file"] { padding: .42rem .55rem; }
 input::file-selector-button {
   margin-right: .55rem;
@@ -207,6 +208,8 @@ input::file-selector-button {
   border-radius: .8rem;
 }
 .validation-result dl { display: grid; gap: .7rem; margin-top: .9rem; }
+.skills-list { padding-inline-start: 1.15rem; margin-top: .2rem; }
+.skills-list li + li { margin-top: .16rem; }
 dt { font-size: .83rem; color: var(--muted); }
 dd { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
 .badge {
@@ -269,6 +272,7 @@ code { padding: .08em .24em; font-size: .9em; overflow-wrap: anywhere; }
 .file-name { margin-top: .8rem; font-weight: 690; overflow-wrap: anywhere; }
 .preview-form { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; margin-top: .8rem; }
 .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; margin-block: 1rem; }
+.validation-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .metrics div { padding: .55rem .65rem; background: var(--soft); border-radius: .6rem; }
 .metrics dd { font-size: 1.3rem; color: var(--deep); }
 

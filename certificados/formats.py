@@ -17,7 +17,7 @@ from lxml import etree
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
-from .data import InputError, Participant
+from .data import InputError, Participant, ValidationRecord
 
 
 TEMPLATE_LIMIT = 12 * 1024 * 1024
@@ -27,7 +27,9 @@ MAX_COLUMNS = 80
 CPF = "cpf"
 NAME = "nome"
 KEY = "chave de validacao"
-BUILT_INS = {NAME, KEY, "programa", "formacao", "carga horaria", "periodo", "data de emissao"}
+ISSUE_DATE = "data de emissao"
+SKILLS = "habilidades"
+BUILT_INS = {NAME, KEY, "programa", "formacao", "carga horaria", "periodo", ISSUE_DATE}
 REQUIRED_TAGS = {NAME: "<<Nome>>", KEY: "<<Chave de validação>>"}
 ALIASES = {
     "nome completo": NAME,
@@ -87,6 +89,39 @@ def normalize_key(value):
     if not VALID_KEY.fullmatch(value) or len(value.replace("-", "").replace("_", "")) < 8:
         raise InputError("Use uma chave de 8 a 64 caracteres, com pelo menos 8 letras ou números.")
     return value.upper()
+
+
+def normalize_issue_date(value):
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str):
+        value = value.strip()
+        if re.fullmatch(r"[0-9]{8}", value):
+            value = f"{value[:2]}/{value[2:4]}/{value[4:]}"
+        for pattern in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(value, pattern).date().isoformat()
+            except ValueError:
+                continue
+    raise InputError("Informe uma data de emissão válida.")
+
+
+def split_skills(value):
+    return [item.strip() for item in re.split(r"[\r\n;|]", value) if item.strip()]
+
+
+def normalize_skills(value):
+    if not isinstance(value, str) or len(value) > 4000:
+        raise InputError("Informe as habilidades como texto de até 4.000 caracteres.")
+    skills = {}
+    for item in split_skills(value):
+        label = scalar_text(item, 150)
+        skills.setdefault(label.casefold(), label)
+    if not skills or len(skills) > 30:
+        raise InputError("Informe de 1 a 30 habilidades.")
+    return "\n".join(skills.values())
 
 
 def scalar_text(value, limit=350):
@@ -255,10 +290,14 @@ def render_pdf(content, values, soffice):
         return content
 
 
-def cell_value(cell, limit=350):
+def raw_cell_value(cell):
     if cell.data_type in {"f", "e"}:
         raise InputError("Use valores fixos nas colunas importadas. Cole os resultados das fórmulas como valores.")
-    value = cell.value
+    return cell.value
+
+
+def cell_value(cell, limit=350):
+    value = raw_cell_value(cell)
     if value is None:
         return ""
     if isinstance(value, (date, datetime)):
@@ -268,17 +307,17 @@ def cell_value(cell, limit=350):
     return scalar_text(value, limit)
 
 
-def spreadsheet_columns(header, custom_fields):
-    required = {NAME: "Nome", CPF: "CPF", KEY: "Chave de validação", **custom_fields}
+def spreadsheet_columns(header, required, optional):
+    allowed = {**required, **optional}
     indexes = {}
     for index, cell in enumerate(header):
         if not isinstance(cell.value, str):
             continue
         field = field_name(cell.value)
-        if field not in required:
+        if field not in allowed:
             continue
         if field in indexes:
-            raise InputError(f"A coluna {required[field]} aparece mais de uma vez na primeira linha.")
+            raise InputError(f"A coluna {allowed[field]} aparece mais de uma vez na primeira linha.")
         indexes[field] = index
     missing = [label for field, label in required.items() if field not in indexes]
     if missing:
@@ -287,6 +326,23 @@ def spreadsheet_columns(header, custom_fields):
 
 
 def parse_spreadsheet(content, custom_fields, digest):
+    required = {NAME: "Nome", CPF: "CPF", KEY: "Chave de validação", **custom_fields}
+    return read_spreadsheet(
+        content, required, {},
+        lambda number, row, indexes: parse_row(number, row, indexes, custom_fields, digest),
+    )
+
+
+def parse_validation_spreadsheet(content, default_date, default_skills):
+    required = {NAME: "Nome", KEY: "Chave de validação"}
+    optional = {ISSUE_DATE: "Data de emissão", SKILLS: "Habilidades"}
+    return read_spreadsheet(
+        content, required, optional,
+        lambda number, row, indexes: parse_validation_row(number, row, indexes, default_date, default_skills),
+    )
+
+
+def read_spreadsheet(content, required, optional, read_record):
     with checked_package(content, 36 * 1024 * 1024):
         try:
             book = load_workbook(BytesIO(content), read_only=True, data_only=False, keep_links=False)
@@ -299,7 +355,7 @@ def parse_spreadsheet(content, custom_fields, digest):
             sheet.reset_dimensions()
             rows = sheet.iter_rows(max_col=MAX_COLUMNS)
             header = next(rows, ())
-            indexes = spreadsheet_columns(header, custom_fields)
+            indexes = spreadsheet_columns(header, required, optional)
             participants, seen_keys, seen_cpfs, errors = [], set(), set(), []
             for row_number, row in enumerate(rows, 2):
                 if row_number > MAX_ROWS + 1:
@@ -307,10 +363,10 @@ def parse_spreadsheet(content, custom_fields, digest):
                 if all(row[index].value in (None, "") for index in indexes.values()):
                     continue
                 try:
-                    participant = parse_row(row_number, row, indexes, custom_fields, digest)
+                    participant = read_record(row_number, row, indexes)
                     if participant.validation_key in seen_keys:
                         raise InputError("A chave já aparece em outra linha da planilha.")
-                    if participant.cpf_digest in seen_cpfs:
+                    if CPF in required and participant.cpf_digest in seen_cpfs:
                         raise InputError("O CPF já aparece em outra linha da planilha.")
                 except InputError as error:
                     errors.append(f"Linha {row_number} · {error}")
@@ -318,7 +374,8 @@ def parse_spreadsheet(content, custom_fields, digest):
                         break
                     continue
                 seen_keys.add(participant.validation_key)
-                seen_cpfs.add(participant.cpf_digest)
+                if CPF in required:
+                    seen_cpfs.add(participant.cpf_digest)
                 participants.append(participant)
             if errors:
                 raise InputError("\n".join(errors))
@@ -329,19 +386,43 @@ def parse_spreadsheet(content, custom_fields, digest):
             book.close()
 
 
-def parse_row(row_number, row, indexes, custom_fields, digest):
+def certificate_identity(row, indexes):
     name = cell_value(row[indexes[NAME]], 180)
     if not name:
         raise InputError("Preencha o nome do participante.")
+    key_cell = row[indexes[KEY]]
+    if key_cell.value is not None and key_cell.data_type != "s":
+        raise InputError("Formate a coluna Chave de validação como texto antes de preencher.")
+    return name, normalize_key(cell_value(key_cell, 64))
+
+
+def parse_validation_row(row_number, row, indexes, default_date, default_skills):
+    name, key = certificate_identity(row, indexes)
+    issued_on = cell_or_default(row, indexes, ISSUE_DATE, default_date)
+    skills = cell_or_default(row, indexes, SKILLS, default_skills)
+    if issued_on == "":
+        raise InputError("Preencha a data de emissão na planilha ou nos dados do lote.")
+    if skills == "":
+        raise InputError("Preencha as habilidades na planilha ou nos dados do lote.")
+    return ValidationRecord(
+        row_number, name, key, normalize_issue_date(issued_on), normalize_skills(skills),
+    )
+
+
+def cell_or_default(row, indexes, field, default):
+    value = raw_cell_value(row[indexes[field]]) if field in indexes else None
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default.strip()
+    return value
+
+
+def parse_row(row_number, row, indexes, custom_fields, digest):
+    name, key = certificate_identity(row, indexes)
     cpf_cell = row[indexes[CPF]]
     cpf_text = cell_value(cpf_cell, 20)
     if type(cpf_cell.value) is int and 0 <= cpf_cell.value <= 99_999_999_999:
         cpf_text = str(cpf_cell.value).zfill(11)
     cpf = normalize_cpf(cpf_text)
-    key_cell = row[indexes[KEY]]
-    if key_cell.value is not None and key_cell.data_type != "s":
-        raise InputError("Formate a coluna Chave de validação como texto antes de preencher.")
-    key = normalize_key(cell_value(key_cell, 64))
     fields = {}
     for field, label in custom_fields.items():
         value = cell_value(row[indexes[field]])
@@ -351,17 +432,21 @@ def parse_row(row_number, row, indexes, custom_fields, digest):
     return Participant(row_number, name, digest(cpf), key, fields)
 
 
-def spreadsheet_model(custom_fields):
+def spreadsheet_model(custom_fields, *, for_validation=False):
     book = Workbook()
     sheet = book.active
     sheet.title = "Participantes"
-    sheet.append(["Nome", "CPF", "Chave de validação", *custom_fields.values()])
+    headers = ["Nome", "Chave de validação", "Data de emissão", "Habilidades"] if for_validation else [
+        "Nome", "CPF", "Chave de validação", *custom_fields.values(),
+    ]
+    sheet.append(headers)
     sheet.freeze_panes = "A2"
     for cell in sheet[1]:
         cell.data_type = "s"
-        sheet.column_dimensions[cell.column_letter].width = max(22, len(cell.value) + 6)
-    for column in ("B", "C"):
-        sheet.column_dimensions[column].number_format = "@"
+        column = sheet.column_dimensions[cell.column_letter]
+        column.width = max(22, len(cell.value) + 6)
+        if field_name(cell.value) in {CPF, KEY}:
+            column.number_format = "@"
     output = BytesIO()
     book.save(output)
     book.close()

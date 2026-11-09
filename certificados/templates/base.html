@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Emita e valide certificados das formações da Prosper.">
+  <meta name="description" content="Valide certificados das formações da Prosper.">
   <title>{% block title %}Central de certificados{% endblock %} | Prosper</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
@@ -22,7 +22,9 @@
         <span>Prosper <small>Certificados</small></span>
       </a>
       <nav aria-label="Navegação principal" class="nav">
-        <a href="{{ url_for('portal.issue') }}"{% if request.endpoint == 'portal.issue' %} aria-current="page"{% endif %}>Emitir</a>
+        {% if config.ISSUANCE_ENABLED %}
+          <a href="{{ url_for('portal.issue') }}"{% if request.endpoint == 'portal.issue' %} aria-current="page"{% endif %}>Emitir</a>
+        {% endif %}
         <a href="{{ url_for('portal.verify') }}"{% if request.endpoint == 'portal.verify' %} aria-current="page"{% endif %}>Validar</a>
         <a class="nav-admin" href="{{ url_for('admin.index') }}"{% if request.blueprint == 'admin' %} aria-current="page"{% endif %}>Painel</a>
       </nav>
@@ -34,7 +36,7 @@
   <footer class="site-footer">
     <div class="wrap footer-inner">
       <span>Prosper Certificados</span>
-      <span>Emissão e validação de certificados</span>
+      <span>{{ "Emissão e validação de certificados" if config.ISSUANCE_ENABLED else "Validação de certificados" }}</span>
     </div>
   </footer>
 </body>

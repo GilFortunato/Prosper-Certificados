@@ -3,30 +3,63 @@
 {% block title %}{{ formation.title }}{% endblock %}
 {% block main_class %}admin-layout{% endblock %}
 {% block content %}
+{% set can_revoke = formation.valid_keys or (config.ISSUANCE_ENABLED and formation.released_at) %}
 <a class="text-link back-link" href="{{ url_for('admin.index') }}">Voltar às formações</a>
 <div class="page-heading">
   <div>
     <p class="eyebrow"><span></span> {{ formation.program }}</p>
     <h1>{{ formation.title }}</h1>
   </div>
-  <span class="badge {{ 'live' if formation.released_at else 'draft' }}">{{ "Autoemissão liberada" if formation.released_at else "Rascunho" }}</span>
+  <span class="badge {{ 'live' if formation.valid_keys else 'draft' }}">{{ "Validação ativa" if formation.valid_keys else "Sem chaves válidas" }}</span>
 </div>
 {% for category, message in get_flashed_messages(with_categories=true) %}
   {{ alert(message, category) }}
 {% endfor %}
 
 <nav class="section-nav" aria-label="Seções da formação">
-  <a href="#modelo">Modelo PowerPoint</a>
-  <a href="#lista">Lista Excel</a>
-  {% if formation.released_at %}
-    <a href="#revogar">Revogar chave</a>
-  {% else %}
-    <a href="#dados">Dados da formação</a>
-    <a href="#liberar">Liberar emissão</a>
+  <a href="#validacao">Lista para validação</a>
+  {% if config.ISSUANCE_ENABLED %}
+    <a href="#modelo">Modelo PowerPoint</a>
+    <a href="#lista">Lista para emissão</a>
+    {% if not formation.released_at %}<a href="#liberar">Liberar emissão</a>{% endif %}
   {% endif %}
+  {% if not formation.released_at %}
+    <a href="#dados">Dados da formação</a>
+  {% endif %}
+  {% if can_revoke %}<a href="#revogar">Revogar chave</a>{% endif %}
 </nav>
 
 <div class="formation-grid">
+  <section class="panel admin-panel" id="validacao" aria-labelledby="validation-title">
+    <h2 id="validation-title">Lista para validação</h2>
+    <p class="muted">Envie o Excel com Nome e Chave de validação. A data de emissão e as habilidades podem vir da planilha ou ser preenchidas para o lote inteiro.</p>
+    <a class="text-link" href="{{ url_for('admin.download_validation_spreadsheet', formation_id=formation.id) }}">Baixar planilha-modelo de validação</a>
+    <dl class="metrics validation-metrics">
+      <div><dt>Chaves válidas</dt><dd>{{ formation.valid_keys }}</dd></div>
+      <div><dt>Chaves revogadas</dt><dd>{{ formation.revoked_keys }}</dd></div>
+    </dl>
+    <form class="stack" action="{{ url_for('admin.upload_validation_list', formation_id=formation.id) }}" method="post" enctype="multipart/form-data">
+      {{ csrf() }}
+      <div class="field">
+        <label for="validation-list">Planilha de certificados (.xlsx)</label>
+        <input id="validation-list" name="validation_list" type="file" accept=".xlsx" required>
+        <small>Use a primeira aba, com cabeçalhos na primeira linha. Até 5 MB.</small>
+      </div>
+      <div class="field">
+        <label for="batch-date">Data de emissão do lote</label>
+        <input id="batch-date" name="issued_on" type="text" inputmode="numeric" placeholder="DD/MM/AAAA" maxlength="10">
+        <small>Preenche as linhas que não têm data na planilha.</small>
+      </div>
+      <div class="field">
+        <label for="batch-skills">Habilidades do lote</label>
+        <textarea id="batch-skills" name="skills" rows="4" maxlength="4000" placeholder="Uma habilidade por linha"></textarea>
+        <small>Preenche as linhas que não têm habilidades na planilha.</small>
+      </div>
+      <button class="button primary" type="submit">Importar e ativar validação</button>
+    </form>
+  </section>
+
+  {% if config.ISSUANCE_ENABLED %}
   <section class="panel admin-panel" id="modelo" aria-labelledby="model-title">
     <p class="eyebrow"><span></span> Etapa 1</p>
     <h2 id="model-title">Modelo PowerPoint</h2>
@@ -59,7 +92,7 @@
 
   <section class="panel admin-panel" id="lista" aria-labelledby="list-title">
     <p class="eyebrow"><span></span> Etapa 2</p>
-    <h2 id="list-title">Lista Excel</h2>
+    <h2 id="list-title">Lista para emissão</h2>
     <p class="muted">A primeira aba deve ter as colunas Nome, CPF e Chave de validação.</p>
     {% if custom_fields %}
       <p class="muted">Inclua também {{ custom_fields.values()|join(', ') }}.</p>
@@ -84,18 +117,9 @@
       <p class="muted">Envie o PowerPoint para habilitar a importação.</p>
     {% endif %}
   </section>
+  {% endif %}
 
-  {% if formation.released_at %}
-    <section class="panel admin-panel" id="revogar" aria-labelledby="revoke-title">
-      <h2 id="revoke-title">Revogar chave</h2>
-      <p class="muted">A revogação bloqueia novos downloads. Se já houve emissão, a consulta pública informa que o certificado foi revogado.</p>
-      <form class="stack" action="{{ url_for('admin.revoke', formation_id=formation.id) }}" method="post">
-        {{ csrf() }}
-        <div class="field">{{ key_field("revoke-key") }}</div>
-        <button class="button danger" type="submit">Revogar certificado</button>
-      </form>
-    </section>
-  {% else %}
+  {% if not formation.released_at %}
     <section class="panel admin-panel" id="dados" aria-labelledby="details-title">
       <h2 id="details-title">Dados da formação</h2>
       <form class="stack" action="{{ url_for('admin.update_details', formation_id=formation.id) }}" method="post">
@@ -104,7 +128,9 @@
         <button class="button secondary" type="submit">Salvar dados da formação</button>
       </form>
     </section>
+  {% endif %}
 
+  {% if config.ISSUANCE_ENABLED and not formation.released_at %}
     <section class="panel admin-panel" id="liberar" aria-labelledby="release-title">
       <p class="eyebrow"><span></span> Etapa 3</p>
       <h2 id="release-title">Liberar autoemissão</h2>
@@ -112,6 +138,18 @@
       <form class="stack" action="{{ url_for('admin.release', formation_id=formation.id) }}" method="post">
         {{ csrf() }}
         <button class="button primary" type="submit"{% if not formation.template_name or not formation.participants %} disabled{% endif %}>Liberar emissão</button>
+      </form>
+    </section>
+  {% endif %}
+
+  {% if can_revoke %}
+    <section class="panel admin-panel" id="revogar" aria-labelledby="revoke-title">
+      <h2 id="revoke-title">Revogar chave</h2>
+      <p class="muted">A consulta pela chave e data passa a indicar que o certificado foi revogado.</p>
+      <form class="stack" action="{{ url_for('admin.revoke', formation_id=formation.id) }}" method="post">
+        {{ csrf() }}
+        <div class="field">{{ key_field("revoke-key") }}</div>
+        <button class="button danger" type="submit">Revogar certificado</button>
       </form>
     </section>
   {% endif %}

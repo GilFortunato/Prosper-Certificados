@@ -1,22 +1,14 @@
 import hmac
 import os
 import secrets
-from datetime import datetime, timedelta
+from datetime import timedelta
 from threading import BoundedSemaphore
-from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import data
 from .config import PASSWORD_METHOD, secret_from_env
-
-
-BRAZIL = ZoneInfo("America/Sao_Paulo")
-
-
-def brazil_date(timestamp):
-    return datetime.fromisoformat(timestamp).astimezone(BRAZIL).strftime("%d/%m/%Y")
 
 
 def csrf_token():
@@ -32,6 +24,7 @@ def create_app(config=None):
     app = Flask(__name__)
     app.config.from_mapping(
         DB_PATH=os.environ.get("PROSPER_DB_PATH", "data/certificados.sqlite3"),
+        ISSUANCE_ENABLED=os.environ.get("PROSPER_ENABLE_ISSUANCE", "0") == "1",
         SOFFICE=os.environ.get("PROSPER_SOFFICE", "soffice"),
         PROXY_HOPS=int(os.environ.get("PROSPER_PROXY_HOPS", "0")),
         MAX_CONTENT_LENGTH=13 * 1024 * 1024,
@@ -62,7 +55,6 @@ def create_app(config=None):
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=proxy_hops)
     app.extensions["pdf_slots"] = BoundedSemaphore(2)
     app.jinja_env.globals.update(csrf_token=csrf_token)
-    app.jinja_env.filters["brazil_date"] = brazil_date
 
     @app.before_request
     def protect_forms():

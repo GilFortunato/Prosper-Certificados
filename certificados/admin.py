@@ -10,12 +10,22 @@ from werkzeug.security import check_password_hash
 from . import data
 from .formats import (
     BUILT_INS, SPREADSHEET_LIMIT, TEMPLATE_LIMIT, RenderError, normalize_key,
-    parse_spreadsheet, scalar_text, spreadsheet_model, template_fields,
+    parse_spreadsheet, parse_validation_spreadsheet, scalar_text, spreadsheet_model, template_fields,
 )
 from .portal import certificate_values, generate_pdf, pdf_download, rate_limit
 
 
 admin = Blueprint("admin", __name__, url_prefix="/admin")
+
+ISSUANCE_ENDPOINTS = {
+    "admin.upload_template", "admin.upload_list", "admin.download_spreadsheet", "admin.preview", "admin.release",
+}
+
+
+@admin.before_request
+def check_issuance_mode():
+    if not current_app.config["ISSUANCE_ENABLED"] and request.endpoint in ISSUANCE_ENDPOINTS:
+        abort(404)
 
 
 def auth_fingerprint():
@@ -109,6 +119,28 @@ def detail(formation_id):
     )
 
 
+@admin.post("/formacoes/<int:formation_id>/validacao")
+def upload_validation_list(formation_id):
+    get_formation(formation_id)
+    try:
+        _, content = read_upload("validation_list", ".xlsx", SPREADSHEET_LIMIT)
+        records = parse_validation_spreadsheet(
+            content, request.form.get("issued_on", ""), request.form.get("skills", ""),
+        )
+        added, updated, skipped = data.register_certificates(formation_id, records)
+    except data.InputError as error:
+        return return_detail(formation_id, str(error), "error")
+    return return_detail(
+        formation_id, f"Importação concluída. Chaves novas ({added}), atualizadas ({updated}) e mantidas ({skipped}).",
+    )
+
+
+@admin.get("/formacoes/<int:formation_id>/validacao/planilha-modelo")
+def download_validation_spreadsheet(formation_id):
+    get_formation(formation_id)
+    return download_xlsx(spreadsheet_model({}, for_validation=True), "modelo-validacao.xlsx")
+
+
 @admin.post("/formacoes/<int:formation_id>/dados")
 def update_details(formation_id):
     get_formation(formation_id)
@@ -151,9 +183,12 @@ def upload_list(formation_id):
 @admin.get("/formacoes/<int:formation_id>/planilha-modelo")
 def download_spreadsheet(formation_id):
     formation = get_formation(formation_id)
-    model = spreadsheet_model(custom_fields(formation))
+    return download_xlsx(spreadsheet_model(custom_fields(formation)), "modelo-participantes.xlsx")
+
+
+def download_xlsx(content, filename):
     return send_file(
-        BytesIO(model), as_attachment=True, download_name="modelo-participantes.xlsx",
+        BytesIO(content), as_attachment=True, download_name=filename,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -207,11 +242,10 @@ def release(formation_id):
 @admin.post("/formacoes/<int:formation_id>/revogar")
 def revoke(formation_id):
     formation = get_formation(formation_id)
-    if not formation["released_at"]:
-        abort(404)
     try:
         key = normalize_key(request.form.get("key", ""))
-        data.revoke_participant(formation_id, key)
+        allow_unissued = bool(current_app.config["ISSUANCE_ENABLED"] and formation["released_at"])
+        data.revoke_certificate(formation_id, key, allow_unissued=allow_unissued)
     except data.InputError as error:
         return return_detail(formation_id, str(error), "error")
-    return return_detail(formation_id, "Chave revogada. Novos downloads foram bloqueados.")
+    return return_detail(formation_id, "Chave revogada.")
