@@ -43,7 +43,7 @@
       <div class="field">
         <label for="validation-list">Planilha de certificados (.xlsx)</label>
         <input id="validation-list" name="validation_list" type="file" accept=".xlsx" required>
-        <small>Use a primeira aba, com cabeçalhos na primeira linha. Até 5 MB.</small>
+        <small>Use a primeira aba, com cabeçalhos na primeira linha. Até {{ config.SPREADSHEET_LIMIT_MB }} MB.</small>
       </div>
       <div class="field">
         <label for="batch-date">Data de emissão do lote</label>
@@ -109,7 +109,7 @@
         <div class="field">
           <label for="spreadsheet">Arquivo .xlsx</label>
           <input id="spreadsheet" name="spreadsheet" type="file" accept=".xlsx" required>
-          <small>{{ "A importação acrescenta novos cadastros à formação." if formation.released_at else "Enquanto estiver em rascunho, um novo arquivo substitui a lista." }} Até 5 MB.</small>
+          <small>{{ "A importação acrescenta novos cadastros à formação." if formation.released_at else "Enquanto estiver em rascunho, um novo arquivo substitui a lista." }} Até {{ config.SPREADSHEET_LIMIT_MB }} MB.</small>
         </div>
         <button class="button secondary" type="submit">Importar participantes</button>
       </form>

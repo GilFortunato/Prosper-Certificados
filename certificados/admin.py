@@ -9,7 +9,7 @@ from werkzeug.security import check_password_hash
 
 from . import data
 from .formats import (
-    BUILT_INS, SPREADSHEET_LIMIT, TEMPLATE_LIMIT, RenderError, normalize_key,
+    BUILT_INS, TEMPLATE_LIMIT, RenderError, normalize_key,
     parse_spreadsheet, parse_validation_spreadsheet, scalar_text, spreadsheet_model, template_fields,
 )
 from .portal import certificate_values, generate_pdf, pdf_download, rate_limit
@@ -123,7 +123,7 @@ def detail(formation_id):
 def upload_validation_list(formation_id):
     get_formation(formation_id)
     try:
-        _, content = read_upload("validation_list", ".xlsx", SPREADSHEET_LIMIT)
+        _, content = read_upload("validation_list", ".xlsx", current_app.config["SPREADSHEET_LIMIT"])
         records = parse_validation_spreadsheet(
             content, request.form.get("issued_on", ""), request.form.get("skills", ""),
         )
@@ -171,7 +171,7 @@ def upload_list(formation_id):
     try:
         if not formation["template_name"]:
             raise data.InputError("Envie o modelo PowerPoint primeiro para identificar os campos da planilha.")
-        _, content = read_upload("spreadsheet", ".xlsx", SPREADSHEET_LIMIT)
+        _, content = read_upload("spreadsheet", ".xlsx", current_app.config["SPREADSHEET_LIMIT"])
         people = parse_spreadsheet(content, custom_fields(formation), data.cpf_digest)
         added, skipped = data.save_participants(formation_id, formation["revision"], people)
     except data.InputError as error:

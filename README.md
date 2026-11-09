@@ -19,11 +19,11 @@ Digite uma habilidade por linha. No Excel, use quebras de linha na célula ou se
 - Cada chave é única entre os programas. Mantenha a coluna em formato de texto. A consulta aceita a chave em letras maiúsculas ou minúsculas.
 - Para corrigir a data ou as habilidades, reimporte a mesma chave para a mesma pessoa e formação. Para PDFs já gerados pelo portal, a data permanece vinculada ao documento emitido.
 - A revogação continua válida após reimportar a chave. A consulta com chave ou data divergente apresenta uma mensagem genérica.
-- A importação usa até 5.000 linhas e 5 MB. CPF e e-mail ficam fora do cadastro de validação.
+- A importação aceita até 5.000 linhas e 4 MB na Vercel ou 5 MB no ambiente local. CPF e e-mail ficam fora do cadastro de validação.
 
 ## Etapa de autoemissão
 
-O modo de emissão pode ser habilitado com `PROSPER_ENABLE_ISSUANCE=1`. Nesse modo, a página inicial permite baixar o PDF com CPF e chave, e a consulta continua em `/validacao`.
+Em um ambiente com LibreOffice, habilite a emissão com `PROSPER_ENABLE_ISSUANCE=1`. Nesse modo, a página inicial permite baixar o PDF com CPF e chave, e a consulta continua em `/validacao`. A implantação na Vercel roda o validador.
 
 1. Entre no painel e crie a formação. Preencha a carga horária e o período se esses campos aparecem no certificado.
 2. Envie o modelo em `.pptx`. Digite `<<Nome>>` e `<<Chave de validação>>` em caixas de texto editáveis dos slides. É possível usar vários slides, incluindo frente e verso. Mantenha cada marcador inteiro no mesmo parágrafo.
@@ -54,9 +54,18 @@ python -m pip install -r requirements.txt
 PROSPER_SECURE_COOKIES=0 python -m flask --app certificados run
 ```
 
-Abra `http://127.0.0.1:5000/validacao`. A senha do painel é a que você escolheu ao gerar o arquivo `.env`. O banco local é criado em `data/certificados.sqlite3`.
+Abra `http://127.0.0.1:5000/validacao`. A senha do painel é a que você escolheu ao gerar o arquivo `.env`. O ambiente local usa `data/certificados.sqlite3` por padrão e usa PostgreSQL quando `DATABASE_URL` está definida.
 
-## Hospedar o portal
+## Vercel e Neon
+
+1. Crie o banco Neon e aplique o esquema de `db/neon.sql` com um usuário autorizado a executar migrações.
+2. No projeto Vercel, configure `DATABASE_URL` com a conexão PostgreSQL via TLS e uma função de acesso da aplicação com permissões de leitura e escrita nas tabelas do portal.
+3. Configure `PROSPER_SESSION_SECRET`, `PROSPER_CPF_KEY` e `PROSPER_ADMIN_PASSWORD_HASH` como segredos de produção. Use `python -m certificados.config` para gerar os valores e definir a senha do painel. Para trocar só a senha, atualize apenas o hash e refaça o deploy.
+4. Faça o deploy da `main`. O ponto de entrada é `app.py` e a página de consulta é `/validacao`.
+
+O esquema é aplicado na preparação do banco. A aplicação usa o banco Neon nas requisições e mantém os dados entre deploys.
+
+## Executar com Docker
 
 A imagem Docker inclui o LibreOffice e o servidor Gunicorn. Rode uma instância com volume persistente em `/data` e encaminhe o tráfego público por um proxy HTTPS para a porta 8000 do contêiner.
 

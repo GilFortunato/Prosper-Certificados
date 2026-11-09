@@ -8,7 +8,9 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import psycopg
 from flask import current_app, g
+from psycopg.rows import dict_row
 
 
 class InputError(ValueError):
@@ -112,11 +114,28 @@ VALIDATION_COUNTS = """
 """
 
 
+class PostgresConnection:
+    def __init__(self, url):
+        self.connection = psycopg.connect(
+            url, autocommit=True, row_factory=dict_row, connect_timeout=10, prepare_threshold=None,
+        )
+
+    def execute(self, query, args=()):
+        return self.connection.execute(query.replace("?", "%s"), args) if args else self.connection.execute(query)
+
+    def close(self):
+        self.connection.close()
+
+
 def connect():
     if "database" not in g:
-        g.database = sqlite3.connect(current_app.config["DB_PATH"], timeout=10, isolation_level=None)
-        g.database.row_factory = sqlite3.Row
-        g.database.execute("PRAGMA foreign_keys = ON")
+        url = current_app.config["DATABASE_URL"]
+        if url:
+            g.database = PostgresConnection(url)
+        else:
+            g.database = sqlite3.connect(current_app.config["DB_PATH"], timeout=10, isolation_level=None)
+            g.database.row_factory = sqlite3.Row
+            g.database.execute("PRAGMA foreign_keys = ON")
     return g.database
 
 
@@ -127,6 +146,8 @@ def close(_error=None):
 
 
 def init_db():
+    if current_app.config["DATABASE_URL"]:
+        return
     Path(current_app.config["DB_PATH"]).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     database = connect()
     database.execute("PRAGMA journal_mode = WAL")
@@ -134,8 +155,15 @@ def init_db():
 
 
 @contextmanager
-def transaction():
+def transaction(*, serialized=False):
     database = connect()
+    if isinstance(database, PostgresConnection):
+        with database.connection.transaction():
+            if serialized:
+                # A key can belong to a validation record and an issuance record.
+                database.execute("SELECT pg_advisory_xact_lock(1347571539)")
+            yield database
+        return
     database.execute("BEGIN IMMEDIATE")
     try:
         yield database
@@ -151,8 +179,9 @@ def timestamp():
 
 def issuance_day(issued_on, issued_at=None):
     if issued_on:
-        return date.fromisoformat(issued_on)
-    return datetime.fromisoformat(issued_at).astimezone(BRAZIL).date()
+        return date.fromisoformat(issued_on) if isinstance(issued_on, str) else issued_on
+    instant = datetime.fromisoformat(issued_at) if isinstance(issued_at, str) else issued_at
+    return instant.astimezone(BRAZIL).date()
 
 
 def cpf_digest(cpf):
@@ -164,12 +193,13 @@ def allow_request(scope, source, max_hits, seconds):
     start = now - now % seconds
     source_digest = hmac.digest(current_app.secret_key, source.encode(), "sha256")
     with transaction() as db:
-        db.execute("DELETE FROM request_limits WHERE window < ?", (now - 3600,))
+        db.execute('DELETE FROM request_limits WHERE "window" < ?', (now - 3600,))
         hits = db.execute(
-            """INSERT INTO request_limits (scope, source, window, hits) VALUES (?, ?, ?, 1)
-               ON CONFLICT (scope, source, window) DO UPDATE SET hits = min(hits + 1, ?)
+            """INSERT INTO request_limits (scope, source, "window", hits) VALUES (?, ?, ?, 1)
+               ON CONFLICT (scope, source, "window") DO UPDATE SET hits = CASE
+                   WHEN request_limits.hits <= ? THEN request_limits.hits + 1 ELSE request_limits.hits END
                RETURNING hits""",
-            (scope, source_digest, start, max_hits + 1),
+            (scope, source_digest, start, max_hits),
         ).fetchone()["hits"]
     return 0 if hits <= max_hits else start + seconds - now
 
@@ -194,19 +224,20 @@ def formation(formation_id):
 
 def create_formation(program, title, workload, period):
     return connect().execute(
-        "INSERT INTO formations (program, title, workload, period) VALUES (?, ?, ?, ?)",
+        "INSERT INTO formations (program, title, workload, period) VALUES (?, ?, ?, ?) RETURNING id",
         (program, title, workload, period),
-    ).lastrowid
+    ).fetchone()["id"]
 
 
 def update_formation(formation_id, program, title, workload, period):
-    changed = connect().execute(
-        """UPDATE formations SET program = ?, title = ?, workload = ?, period = ?, revision = revision + 1
-           WHERE id = ? AND released_at IS NULL""",
-        (program, title, workload, period, formation_id),
-    ).rowcount
-    if not changed:
-        raise InputError("Os dados desta formação já constam nos certificados liberados.")
+    with transaction(serialized=True) as db:
+        changed = db.execute(
+            """UPDATE formations SET program = ?, title = ?, workload = ?, period = ?, revision = revision + 1
+               WHERE id = ? AND released_at IS NULL""",
+            (program, title, workload, period, formation_id),
+        ).rowcount
+        if not changed:
+            raise InputError("Os dados desta formação já constam nos certificados liberados.")
 
 
 def load_template(formation_id):
@@ -215,13 +246,14 @@ def load_template(formation_id):
 
 
 def save_template(formation_id, content, name, fields):
-    changed = connect().execute(
-        """UPDATE formations SET template = ?, template_name = ?, template_fields = ?,
-               revision = revision + 1 WHERE id = ? AND released_at IS NULL""",
-        (content, name, json.dumps(fields, ensure_ascii=False), formation_id),
-    ).rowcount
-    if not changed:
-        raise InputError("O modelo desta formação já está em uso. Cadastre outra formação para usar um novo modelo.")
+    with transaction(serialized=True) as db:
+        changed = db.execute(
+            """UPDATE formations SET template = ?, template_name = ?, template_fields = ?,
+                   revision = revision + 1 WHERE id = ? AND released_at IS NULL""",
+            (content, name, json.dumps(fields, ensure_ascii=False), formation_id),
+        ).rowcount
+        if not changed:
+            raise InputError("O modelo desta formação já está em uso. Cadastre outra formação para usar um novo modelo.")
 
 
 def same_holder(record, formation_id, person):
@@ -230,7 +262,7 @@ def same_holder(record, formation_id, person):
 
 def register_certificates(formation_id, participants):
     added = updated = skipped = 0
-    with transaction() as db:
+    with transaction(serialized=True) as db:
         for person in participants:
             registered = db.execute(
                 """SELECT formation_id, name, issued_on, skills, revoked_at FROM validation_records
@@ -260,7 +292,7 @@ def register_certificates(formation_id, participants):
                     (person.validation_key, formation_id, person.name, person.issued_on, person.skills),
                 )
                 added += 1
-            elif (registered["name"], registered["issued_on"], registered["skills"]) != (
+            elif (registered["name"], str(registered["issued_on"]), registered["skills"]) != (
                 person.name, person.issued_on, person.skills,
             ):
                 db.execute(
@@ -275,7 +307,7 @@ def register_certificates(formation_id, participants):
 
 def save_participants(formation_id, version, participants):
     added = skipped = 0
-    with transaction() as db:
+    with transaction(serialized=True) as db:
         current = formation(formation_id)
         if current["revision"] != version:
             raise InputError("A formação mudou durante a importação. Envie a planilha novamente.")
@@ -290,7 +322,8 @@ def save_participants(formation_id, version, participants):
                 (person.validation_key,),
             ).fetchone()
             if existing:
-                if tuple(existing) == (formation_id, person.name, person.cpf_digest, serialized):
+                identity = (existing["formation_id"], existing["name"], existing["cpf_digest"], existing["fields"])
+                if identity == (formation_id, person.name, person.cpf_digest, serialized):
                     skipped += 1
                     continue
                 raise InputError(f"Linha {person.row_number} · Esta chave já pertence a outro cadastro.")
@@ -308,7 +341,7 @@ def save_participants(formation_id, version, participants):
                        VALUES (?, ?, ?, ?, ?)""",
                     (formation_id, person.name, person.cpf_digest, person.validation_key, serialized),
                 )
-            except sqlite3.IntegrityError as error:
+            except (sqlite3.IntegrityError, psycopg.IntegrityError) as error:
                 raise InputError(
                     f"Linha {person.row_number} · Este CPF já tem uma chave ativa nesta formação."
                 ) from error
@@ -329,7 +362,7 @@ def preview_source(formation_id):
 
 
 def release_formation(formation_id, version, required_fields):
-    with transaction() as db:
+    with transaction(serialized=True) as db:
         current = formation(formation_id)
         if current["released_at"]:
             return
@@ -352,7 +385,7 @@ def release_formation(formation_id, version, required_fields):
 
 def revoke_certificate(formation_id, validation_key, *, allow_unissued):
     now = timestamp()
-    with transaction() as db:
+    with transaction(serialized=True) as db:
         registered = db.execute(
             """UPDATE validation_records SET revoked_at = ?
                WHERE formation_id = ? AND validation_key = ? AND revoked_at IS NULL""",
@@ -381,13 +414,13 @@ def eligible_participant(cpf, validation_key):
 
 
 def record_issuance(participant_id, pdf, issued_at, rendered_day):
-    with transaction() as db:
+    with transaction(serialized=True) as db:
         registered = db.execute(
             """SELECT v.issued_on FROM participants p JOIN validation_records v
                ON v.validation_key = p.validation_key WHERE p.id = ?""",
             (participant_id,),
         ).fetchone()
-        if registered and registered["issued_on"] != rendered_day:
+        if registered and str(registered["issued_on"]) != rendered_day:
             raise InputError("A data do certificado foi atualizada. Tente novamente.")
         db.execute(
             """UPDATE participants SET pdf = ?, issued_at = ?

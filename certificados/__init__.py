@@ -19,16 +19,22 @@ def csrf_token():
 
 def create_app(config=None):
     from .admin import admin, authenticated
+    from .formats import SPREADSHEET_LIMIT
     from .portal import portal
 
     app = Flask(__name__)
+    on_vercel = os.environ.get("VERCEL") == "1" or bool(os.environ.get("VERCEL_ENV"))
+    spreadsheet_limit = 4 * 1024 * 1024 if on_vercel else SPREADSHEET_LIMIT
     app.config.from_mapping(
+        DATABASE_URL=os.environ.get("DATABASE_URL", ""),
         DB_PATH=os.environ.get("PROSPER_DB_PATH", "data/certificados.sqlite3"),
-        ISSUANCE_ENABLED=os.environ.get("PROSPER_ENABLE_ISSUANCE", "0") == "1",
+        ISSUANCE_ENABLED=not on_vercel and os.environ.get("PROSPER_ENABLE_ISSUANCE", "0") == "1",
         SOFFICE=os.environ.get("PROSPER_SOFFICE", "soffice"),
-        PROXY_HOPS=int(os.environ.get("PROSPER_PROXY_HOPS", "0")),
-        MAX_CONTENT_LENGTH=13 * 1024 * 1024,
-        MAX_FORM_MEMORY_SIZE=64 * 1024,
+        PROXY_HOPS=int(os.environ.get("PROSPER_PROXY_HOPS", "1" if on_vercel else "0")),
+        SPREADSHEET_LIMIT=spreadsheet_limit,
+        SPREADSHEET_LIMIT_MB=spreadsheet_limit // (1024 * 1024),
+        MAX_CONTENT_LENGTH=spreadsheet_limit + 65536 if on_vercel else 13 * 1024 * 1024,
+        MAX_FORM_MEMORY_SIZE=512 * 1024,
         MAX_FORM_PARTS=8,
         SESSION_COOKIE_NAME="prosper_certificados",
         SESSION_COOKIE_HTTPONLY=True,
@@ -49,6 +55,8 @@ def create_app(config=None):
             raise RuntimeError("Gere a senha administrativa com python -m certificados.config.")
     else:
         app.config.update(config)
+    if on_vercel and not app.config["DATABASE_URL"]:
+        raise RuntimeError("Configure DATABASE_URL com a conexão Neon do portal.")
 
     proxy_hops = app.config["PROXY_HOPS"]
     if proxy_hops > 0:
@@ -82,10 +90,13 @@ def create_app(config=None):
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
+    upload_limit = f"Envie uma planilha de até {app.config['SPREADSHEET_LIMIT_MB']} MB."
+    if app.config["ISSUANCE_ENABLED"]:
+        upload_limit += " O PowerPoint pode ter até 12 MB."
     messages = {
         400: ("Sessão do formulário expirada", "Volte à página anterior, atualize e tente novamente."),
         404: ("Página indisponível", "Confira o endereço ou volte à central de certificados."),
-        413: ("Envio acima do limite", "O limite é 12 MB para o PowerPoint e 5 MB para a planilha."),
+        413: ("Envio acima do limite", upload_limit),
         500: ("Serviço indisponível", "Tente novamente em alguns instantes."),
     }
 
